@@ -2,44 +2,42 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 app.registerExtension({
-    name: "Comfy.Pause.Signaler",
+    name: "Comfy.Pause.Control",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "Signaler") {
-            console.log("[ComfyUI-Pause] ✅ Found Signaler node definition! Injecting buttons...");
-
+        // Target both Standard and Advanced nodes
+        if (nodeData.name === "PSampler" || nodeData.name === "PSamplerAdvanced") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
-                // 1. Add the Pause Button
-                this.addWidget("button", "🛑 PAUSE", null, () => {
-                    sendBridgeSignal("PAUSE");
-                });
+                // 1. Control Deck
+                this.addWidget("button", "▶️ RESUME", null, () => sendSignal("PROCEED"));
+                this.addWidget("button", "⏸️ PAUSE", null, () => sendSignal("PAUSE"));
 
-                // 2. Add the Resume Button
-                this.addWidget("button", "▶️ RESUME", null, () => {
-                    sendBridgeSignal("PROCEED");
-                });
+                // 2. Precision CFG Fix
+                const cfgWidget = this.widgets.find(w => w.name === "cfg");
+                if (cfgWidget) {
+                    cfgWidget.step = 0.1;
+                    if (!cfgWidget.options) cfgWidget.options = {};
+                    cfgWidget.options.step = 0.1;
+                    cfgWidget.options.precision = 1;
+                }
 
-                // 3. Force the node to be large enough to show buttons
-                this.setSize([200, 100]);
-
-                console.log("[ComfyUI-Pause] 🛠️ Buttons added to new Signaler node.");
+                this.setSize([300, nodeData.name === "PSamplerAdvanced" ? 440 : 280]);
                 return r;
             };
         }
     }
 });
 
-async function sendBridgeSignal(command) {
-    console.log(`[ComfyUI-Pause] 📤 Sending: ${command}`);
+async function sendSignal(command) {
     try {
-        const response = await api.fetchApi("/comfy/steer", {
+        await api.fetchApi("/comfy/pause_signal", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ command: command }),
         });
     } catch (error) {
-        console.error("[ComfyUI-Pause] ❌ API Error:", error);
+        console.error("[P-Sampler] API Error:", error);
     }
 }

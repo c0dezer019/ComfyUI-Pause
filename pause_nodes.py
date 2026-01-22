@@ -1,24 +1,16 @@
-import torch
 import time
 import nodes
 import comfy.samplers
 import comfy.sample
-import comfy.utils
 import latent_preview
 from .shared import PAUSE_STATE
 
-class Signaler:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": {}}
-    RETURN_TYPES = ("PAUSE_BUS",)
-    RETURN_NAMES = ("signal_bus",)
-    FUNCTION = "do_nothing"
-    CATEGORY = "Pause/Control"
-    def do_nothing(self):
-        return ("SIGNAL_BUS_ACTIVE",)
-
+# --- NODE 1: STANDARD PAUSABLE SAMPLER ---
 class PSampler:
+    """
+    The Pausable Sampler (Standard).
+    Features: Pause & Resume. In-Memory Only.
+    """
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -26,72 +18,45 @@ class PSampler:
                 "model": ("MODEL",),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
                 "sampler_name": (comfy.samplers.KSampler.SAMPLERS, ),
                 "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
                 "positive": ("CONDITIONING", ),
                 "negative": ("CONDITIONING", ),
                 "latent_image": ("LATENT", ),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-            },
-            "optional": {
-                "signal_bus": ("PAUSE_BUS", ),
             }
         }
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "sample"
-    CATEGORY = "Pause/Sampling"
+    CATEGORY = "Pausable/Engine"
 
-    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0, signal_bus=None):
+    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise):
         
         latent_samples = latent_image["samples"]
-        disable_noise = False 
-
-        if disable_noise:
-            noise = torch.zeros(latent_samples.size(), dtype=latent_samples.dtype, layout=latent_samples.layout, device="cpu")
-        else:
-            batch_inds = latent_image.get("batch_index") if "batch_index" in latent_image else None
-            noise = comfy.sample.prepare_noise(latent_samples, seed, batch_inds)
-
-        noise_mask = None
-        if "noise_mask" in latent_image:
-            noise_mask = latent_image["noise_mask"]
-
+        batch_inds = latent_image.get("batch_index") if "batch_index" in latent_image else None
+        noise = comfy.sample.prepare_noise(latent_samples, seed, batch_inds)
+        noise_mask = latent_image.get("noise_mask", None)
         preview_callback = latent_preview.prepare_callback(model, steps, latent_image)
 
-        # --- REFINED CALLBACK WITH BETTER LOGGING ---
         def intercept_callback(step, x0, x, total_steps):
-            # 'step' is 0-indexed (0, 1, 2...). 
-            # So step=0 is actually the 1st step.
-            human_step = step + 1 
+            human_step = step + 1
+            if preview_callback: preview_callback(step, x0, x, total_steps)
 
-            # 1. Update the UI Preview first (Show the result of the step we just finished)
-            if preview_callback:
-                preview_callback(step, x0, x, total_steps)
-
-            # 2. Check Bridge
-            command = PAUSE_STATE.get("command")
-            if command == "PAUSE":
-                print(f"\n[PSampler] 🛑 PAUSE TRIGGERED.")
-                print(f"[PSampler] ✅ Finished Step {human_step}/{total_steps}.")
-                print(f"[PSampler] ⏸️ Holding execution... (Next up: Step {human_step + 1})")
-                
-                # Wait Loop
-                while PAUSE_STATE.get("command") == "PAUSE":
+            if PAUSE_STATE.get("command") == "PAUSE":
+                print(f"[P-Sampler] ⏸️ PAUSED at Step {human_step}. Waiting...")
+                while PAUSE_STATE.get("command") == "PAUSE": 
                     time.sleep(0.1)
-                
-                print(f"[PSampler] ▶️ RESUME SIGNAL RECEIVED.")
-                print(f"[PSampler] 🚀 Proceeding to calculate Step {human_step + 1}...\n")
+                print(f"[P-Sampler] ▶️ RESUMED.")
 
-        # Execute
         try:
             samples = comfy.sample.sample(
                 model, noise, steps, cfg, sampler_name, scheduler, 
                 positive, negative, latent_samples,
                 denoise=denoise, 
-                disable_noise=disable_noise, 
-                start_step=None, 
+                disable_noise=False, 
+                start_step=0, 
                 last_step=None, 
                 force_full_denoise=False, 
                 noise_mask=noise_mask, 
@@ -99,7 +64,83 @@ class PSampler:
                 seed=seed
             )
         except comfy.model_management.InterruptProcessingException:
-            return (latent_image,)
+            print("[P-Sampler] 🛑 System Interrupt. Aborting.")
+            raise
+
+        out = latent_image.copy()
+        out['samples'] = samples
+        return (out,)
+
+# --- NODE 2: ADVANCED PAUSABLE SAMPLER ---
+class PSamplerAdvanced:
+    """
+    The Pausable Sampler (Advanced).
+    Exposes manual control over noise and steps.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "add_noise": (["enable", "disable"], ),
+                "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS, ),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
+                "positive": ("CONDITIONING", ),
+                "negative": ("CONDITIONING", ),
+                "latent_image": ("LATENT", ),
+                "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
+                "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
+                "return_with_leftover_noise": (["disable", "enable"], ),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "sample"
+    CATEGORY = "Pausable/Engine"
+
+    def sample(self, model, add_noise, noise_seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, start_at_step, end_at_step, return_with_leftover_noise):
+        
+        force_full_denoise = (return_with_leftover_noise == "disable")
+        disable_noise = (add_noise == "disable")
+        latent_samples = latent_image["samples"]
+        
+        if not disable_noise:
+            batch_inds = latent_image.get("batch_index") if "batch_index" in latent_image else None
+            noise = comfy.sample.prepare_noise(latent_samples, noise_seed, batch_inds)
+        else:
+            noise = torch.zeros(latent_samples.size(), dtype=latent_samples.dtype, layout=latent_samples.layout, device="cpu")
+
+        noise_mask = latent_image.get("noise_mask", None)
+        preview_callback = latent_preview.prepare_callback(model, steps, latent_image)
+
+        def intercept_callback(step, x0, x, total_steps):
+            human_step = step + 1
+            if preview_callback: preview_callback(step, x0, x, total_steps)
+
+            if PAUSE_STATE.get("command") == "PAUSE":
+                print(f"[P-Sampler] ⏸️ PAUSED at Step {human_step}. Waiting...")
+                while PAUSE_STATE.get("command") == "PAUSE": 
+                    time.sleep(0.1)
+                print(f"[P-Sampler] ▶️ RESUMED.")
+
+        try:
+            samples = comfy.sample.sample(
+                model, noise, steps, cfg, sampler_name, scheduler, 
+                positive, negative, latent_samples,
+                disable_noise=disable_noise, 
+                start_step=start_step, 
+                last_step=end_at_step, 
+                force_full_denoise=force_full_denoise, 
+                noise_mask=noise_mask, 
+                callback=intercept_callback, 
+                seed=noise_seed
+            )
+        except comfy.model_management.InterruptProcessingException:
+            print("[P-Sampler] 🛑 System Interrupt. Aborting.")
+            raise
 
         out = latent_image.copy()
         out['samples'] = samples
