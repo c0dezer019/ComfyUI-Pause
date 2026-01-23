@@ -1,13 +1,13 @@
 [project]
-name = "comfyui-pause"
-description = "Modifed Sampler nodes that allow you to pause/resume generations. For those with older hardware running in CPU mode or old GPUs. Useful for managing thermals."
+name = "comfyui-Cryogen"
+description = "Modifed Sampler nodes that allow you to pause/resume generations. Much more than that, you can save the current generation status by taking a snapshot of RNG and momentum tensors in their current state."
 version = "1.0.0"
 license = { file = "LICENSE" }
 
 [project.urls]
-Repository = "https://github.com/c0dezer019/ComfyUI-Pause"
+Repository = "https://github.com/c0dezer019/ComfyUI-Cryogen"
 
 [tool.comfy]
 PublisherId = "c0dezer019"
-DisplayName = "Pause"
+DisplayName = "Cryo"
 Icon = ""
